@@ -1,56 +1,89 @@
 const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
+const uuid = require('uuid');
 
-// Configuration du serveur Express
 const app = express();
-const PORT = 5000;
-
-// Middleware pour analyser le JSON
-app.use(express.json());
-
-// Route API de test
-app.get('/api', (req, res) => {
-  res.json({ message: 'Hello from REST API!' });
-});
-
-// Création d'un serveur HTTP pour combiner Express et Socket.IO
 const server = http.createServer(app);
-
-// Création du serveur Socket.IO
 const io = new Server(server, {
   cors: {
-    origin: '*', // Permet les connexions depuis n'importe quelle origine (à ajuster pour la sécurité)
+    origin: 'http://localhost:3000', // Front-end React
+    methods: ['GET', 'POST'],
   },
 });
 
-// Gestion des connexions Socket.IO
+let games = {}; // Stocke les jeux actifs
+
+// Middleware pour accepter les requêtes JSON
+app.use(express.json());
+
+// Route pour créer une nouvelle partie
+app.post('/api/new-game', (req, res) => {
+  const gameId = uuid.v4();  // Créer un ID unique pour chaque partie
+  games[gameId] = { 
+    number: generateMysteryNumber(),  // Nombre mystère à deviner (6 chiffres)
+    players: [], 
+    guesses: [] 
+  };  // Ajouter la partie à notre "base de données" en mémoire
+  res.json({ gameId }); // Retourner l'ID de la nouvelle partie
+});
+
+// Fonction pour générer un nombre mystère de 6 chiffres
+function generateMysteryNumber() {
+  let num = '';
+  while (num.length < 6) {
+    num += Math.floor(Math.random() * 10); // Génère un nombre de 6 chiffres
+  }
+  return num;
+}
+
+// Lorsqu'un joueur se connecte via WebSocket
 io.on('connection', (socket) => {
-  console.log(`Client connecté : ${socket.id}`);
+  console.log('Un utilisateur est connecté');
 
-  // Envoi d'un message de bienvenue au client
-  socket.emit('message', { message: 'Bienvenue sur le serveur Socket.IO!' });
-
-  // Gestion des messages envoyés par le client
-  socket.on('sendMessage', (data) => {
-    console.log(`Message reçu de ${socket.id} : ${data.message}`);
-
-    // Réponse au client
-    socket.emit('message', { message: `Message reçu : ${data.message}` });
-
-    // Broadcasting (envoyer à tous les autres clients)
-    socket.broadcast.emit('message', {
-      message: `Un autre utilisateur a envoyé : ${data.message}`,
-    });
+  // Le joueur rejoint une partie existante
+  socket.on('joinGame', (gameId) => {
+    if (games[gameId]) {
+      games[gameId].players.push(socket.id); // Ajouter le joueur à la liste des joueurs
+      socket.join(gameId); // Joindre la salle du jeu
+      io.to(gameId).emit('message', `Un joueur a rejoint la partie ${gameId}`);
+    } else {
+      socket.emit('message', `La partie ${gameId} n'existe pas.`);
+    }
   });
 
-  // Gestion de la déconnexion
+  // Écoute des devinettes
+  socket.on('guess', (gameId, guess) => {
+    if (games[gameId]) {
+      // Vérifier combien de chiffres sont corrects
+      const mysteryNumber = games[gameId].number;
+      let correctCount = 0;
+      
+      for (let i = 0; i < 6; i++) {
+        if (guess[i] === mysteryNumber[i]) {
+          correctCount++;
+        }
+      }
+
+      games[gameId].guesses.push({ playerId: socket.id, guess, correctCount });
+      
+      // Si le joueur a deviné correctement
+      if (correctCount === 6) {
+        io.to(gameId).emit('message', `Le joueur ${socket.id} a gagné ! Nombre mystère : ${mysteryNumber}`);
+      } else {
+        io.to(gameId).emit('message', `Le joueur ${socket.id} a deviné ${correctCount} chiffres corrects.`);
+      }
+    } else {
+      socket.emit('message', 'La partie n\'existe pas.');
+    }
+  });
+
   socket.on('disconnect', () => {
-    console.log(`Client déconnecté : ${socket.id}`);
+    console.log('Un utilisateur s\'est déconnecté');
   });
 });
 
-// Démarrage du serveur HTTP et Socket.IO
-server.listen(PORT, () => {
-  console.log(`Serveur démarré sur http://localhost:${PORT}`);
+// Démarrer le serveur
+server.listen(5000, () => {
+  console.log('Serveur démarré sur http://localhost:5000');
 });
